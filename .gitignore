@@ -1,0 +1,15 @@
+# Design docs — private for now
+/docs/
+README.md
+
+# Rust
+/target/
+**/*.rs.bk
+
+# macOS
+.DS_Store
+
+# Editors
+.idea/
+.vscode/
+*.swp
