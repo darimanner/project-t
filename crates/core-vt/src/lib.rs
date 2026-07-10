@@ -9,6 +9,9 @@ use std::sync::{Arc, Mutex};
 // grid/cell types without declaring their own alacritty_terminal dependency.
 pub use alacritty_terminal;
 
+mod palette;
+pub use palette::{DEFAULT_BG, DEFAULT_FG, resolve_color};
+
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point};
