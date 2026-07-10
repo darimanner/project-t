@@ -1,5 +1,8 @@
 //! Thin binary: GPUI window hosting the terminal pane.
 
+#[allow(dead_code)]
+mod keys;
+
 use gpui::{
     App, AppContext, Bounds, Context, IntoElement, ParentElement, Render, Styled, Window,
     WindowBounds, WindowOptions, div, px, rgb, size,

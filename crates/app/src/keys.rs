@@ -1,70 +1,95 @@
-//! Translates winit keyboard events into terminal input bytes.
+//! Translates GPUI keystrokes into terminal input bytes.
 
-use winit::event::KeyEvent;
-use winit::keyboard::{Key, ModifiersState, NamedKey};
+use gpui::{Keystroke, Modifiers};
 
-/// Encodes a key press as the byte sequence a terminal application expects.
-/// Returns `None` for keys that produce no input (modifiers, function keys
-/// we do not support yet).
-pub fn encode(event: &KeyEvent, modifiers: ModifiersState) -> Option<Vec<u8>> {
-    // Ctrl+letter -> C0 control byte (Ctrl-C = 0x03 etc.).
-    if modifiers.control_key()
-        && let Key::Character(text) = &event.logical_key
-    {
-        let c = text.chars().next()?;
+/// Encodes a keystroke as the byte sequence a terminal application expects.
+/// Returns `None` for keys that produce no input.
+pub fn encode(keystroke: &Keystroke) -> Option<Vec<u8>> {
+    let m = &keystroke.modifiers;
+
+    // Ctrl+letter -> C0 control byte (Ctrl-C = 0x03, etc.).
+    if m.control && keystroke.key.len() == 1 {
+        let c = keystroke.key.chars().next()?;
         if c.is_ascii_alphabetic() {
             return Some(vec![(c.to_ascii_uppercase() as u8) & 0x1f]);
         }
     }
 
-    let named = match &event.logical_key {
-        Key::Named(named) => *named,
-        _ => return event.text.as_ref().map(|t| t.as_bytes().to_vec()),
+    let named: &[u8] = match keystroke.key.as_str() {
+        "enter" => b"\r",
+        "backspace" => b"\x7f",
+        "tab" => b"\t",
+        "escape" => b"\x1b",
+        "space" => b" ",
+        "up" => b"\x1b[A",
+        "down" => b"\x1b[B",
+        "right" => b"\x1b[C",
+        "left" => b"\x1b[D",
+        "home" => b"\x1b[H",
+        "end" => b"\x1b[F",
+        "pageup" => b"\x1b[5~",
+        "pagedown" => b"\x1b[6~",
+        "delete" => b"\x1b[3~",
+        "insert" => b"\x1b[2~",
+        // Not a named key: fall back to the typed character.
+        _ => return keystroke.key_char.as_ref().map(|s| s.as_bytes().to_vec()),
     };
-
-    let bytes: &[u8] = match named {
-        NamedKey::Enter => b"\r",
-        NamedKey::Backspace => b"\x7f",
-        NamedKey::Tab => b"\t",
-        NamedKey::Escape => b"\x1b",
-        NamedKey::Space => b" ",
-        NamedKey::ArrowUp => b"\x1b[A",
-        NamedKey::ArrowDown => b"\x1b[B",
-        NamedKey::ArrowRight => b"\x1b[C",
-        NamedKey::ArrowLeft => b"\x1b[D",
-        NamedKey::Home => b"\x1b[H",
-        NamedKey::End => b"\x1b[F",
-        NamedKey::PageUp => b"\x1b[5~",
-        NamedKey::PageDown => b"\x1b[6~",
-        NamedKey::Delete => b"\x1b[3~",
-        NamedKey::Insert => b"\x1b[2~",
-        _ => return event.text.as_ref().map(|t| t.as_bytes().to_vec()),
-    };
-    Some(bytes.to_vec())
+    Some(named.to_vec())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use winit::keyboard::SmolStr;
 
-    fn plain() -> ModifiersState {
-        ModifiersState::empty()
+    fn ks(key: &str, key_char: Option<&str>, modifiers: Modifiers) -> Keystroke {
+        Keystroke {
+            modifiers,
+            key: key.to_owned(),
+            key_char: key_char.map(|s| s.to_owned()),
+        }
     }
 
-    // KeyEvent cannot be constructed directly (non-exhaustive), so unit tests
-    // here only cover the pure helpers; end-to-end key handling is exercised
-    // manually until we add a fake-event harness.
-    #[test]
-    fn ctrl_byte_math_is_correct() {
-        // Ctrl-C must be ETX (0x03); guards the `& 0x1f` trick.
-        assert_eq!((b'C') & 0x1f, 0x03);
-        assert_eq!((b'Z') & 0x1f, 0x1a);
+    fn plain() -> Modifiers {
+        Modifiers::default()
+    }
+
+    fn ctrl() -> Modifiers {
+        Modifiers {
+            control: true,
+            ..Modifiers::default()
+        }
     }
 
     #[test]
-    fn modifiers_default_is_empty() {
-        assert!(!plain().control_key());
-        let _ = SmolStr::new("a");
+    fn printable_char() {
+        assert_eq!(encode(&ks("a", Some("a"), plain())), Some(b"a".to_vec()));
+    }
+
+    #[test]
+    fn ctrl_c_is_etx() {
+        assert_eq!(encode(&ks("c", Some("c"), ctrl())), Some(vec![0x03]));
+    }
+
+    #[test]
+    fn enter_is_cr() {
+        assert_eq!(encode(&ks("enter", None, plain())), Some(b"\r".to_vec()));
+    }
+
+    #[test]
+    fn backspace_is_del() {
+        assert_eq!(
+            encode(&ks("backspace", None, plain())),
+            Some(b"\x7f".to_vec())
+        );
+    }
+
+    #[test]
+    fn arrow_left_is_csi_d() {
+        assert_eq!(encode(&ks("left", None, plain())), Some(b"\x1b[D".to_vec()));
+    }
+
+    #[test]
+    fn escape_is_esc() {
+        assert_eq!(encode(&ks("escape", None, plain())), Some(b"\x1b".to_vec()));
     }
 }
