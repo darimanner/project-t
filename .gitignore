@@ -1,5 +1,7 @@
-# Design docs — private for now
-/docs/
+# Private design docs kept local; generated specs/plans under docs/superpowers/ stay tracked
+/docs/*
+!/docs/superpowers/
+!/docs/superpowers/**
 README.md
 
 # Rust
