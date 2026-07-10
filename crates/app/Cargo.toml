@@ -7,5 +7,4 @@ license.workspace = true
 [dependencies]
 core-pty = { version = "0.1.0", path = "../core-pty" }
 core-vt = { version = "0.1.0", path = "../core-vt" }
-render = { version = "0.1.0", path = "../render" }
-winit = "0.30.13"
+gpui = "0.2.2"
