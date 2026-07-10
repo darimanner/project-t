@@ -5,3 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+bytemuck = "1.25.0"
+core-vt = { version = "0.1.0", path = "../core-vt" }
+glyphon = "0.12.0"
+pollster = "1.0.1"
+thiserror.workspace = true
+wgpu = "30.0.0"
