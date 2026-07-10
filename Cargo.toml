@@ -12,3 +12,14 @@ thiserror = "2"
 
 [profile.release]
 lto = "thin"
+
+# Optimize dependencies even in dev builds. Text shaping (cosmic-text) and the
+# GPU stack (wgpu/naga) are painfully slow when compiled unoptimized, which
+# makes the terminal lag.
+[profile.dev.package."*"]
+opt-level = 3
+
+# Lightly optimize our own crates too: the per-frame render loop stays snappy
+# while rebuilds remain fast (opt-level 1 compiles far quicker than 3).
+[profile.dev]
+opt-level = 1
