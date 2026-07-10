@@ -7,4 +7,5 @@ license.workspace = true
 [dependencies]
 core-pty = { version = "0.1.0", path = "../core-pty" }
 core-vt = { version = "0.1.0", path = "../core-vt" }
+futures = "0.3.32"
 gpui = "0.2.2"

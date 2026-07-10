@@ -140,6 +140,22 @@ impl Vt {
             .collect();
         text.trim_end().to_owned()
     }
+
+    /// Visible rows of the current viewport, top-to-bottom, trailing whitespace
+    /// trimmed. Honors scrollback position (`display_offset`).
+    pub fn visible_lines(&self) -> Vec<String> {
+        let grid = self.term.grid();
+        let offset = grid.display_offset() as i32;
+        let rows = grid.screen_lines();
+        let cols = grid.columns();
+        (0..rows)
+            .map(|row| {
+                let line = Line(row as i32 - offset);
+                let text: String = (0..cols).map(|c| grid[line][Column(c)].c).collect();
+                text.trim_end().to_owned()
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -199,6 +215,22 @@ mod tests {
         assert_eq!(writes, vec!["\x1b[1;1R".to_owned()]);
         // Queue is drained.
         assert!(vt.drain_pty_writes().is_empty());
+    }
+
+    #[test]
+    fn visible_lines_reads_viewport() {
+        let mut vt = Vt::new(
+            GridSize {
+                columns: 20,
+                screen_lines: 3,
+            },
+            100,
+        );
+        vt.advance(b"a\r\nb\r\nc");
+        assert_eq!(
+            vt.visible_lines(),
+            vec!["a".to_owned(), "b".to_owned(), "c".to_owned()]
+        );
     }
 
     #[test]

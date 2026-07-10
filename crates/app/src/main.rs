@@ -1,24 +1,11 @@
 //! Thin binary: GPUI window hosting the terminal pane.
 
-#[allow(dead_code)]
 mod keys;
+mod terminal_view;
 
-use gpui::{
-    App, AppContext, Bounds, Context, IntoElement, ParentElement, Render, Styled, Window,
-    WindowBounds, WindowOptions, div, px, rgb, size,
-};
+use gpui::{App, AppContext, Bounds, WindowBounds, WindowOptions, px, size};
 
-struct Root;
-
-impl Render for Root {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .size_full()
-            .bg(rgb(0x121216))
-            .text_color(rgb(0xd8d8d8))
-            .child("project-t")
-    }
-}
+use terminal_view::TerminalView;
 
 fn main() {
     gpui::Application::new().run(|cx: &mut App| {
@@ -28,7 +15,7 @@ fn main() {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 ..Default::default()
             },
-            |_, cx| cx.new(|_| Root),
+            |window, cx| cx.new(|cx| TerminalView::new(window, cx)),
         )
         .unwrap();
         cx.activate(true);
