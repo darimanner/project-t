@@ -1,6 +1,6 @@
 //! Translates GPUI keystrokes into terminal input bytes.
 
-use gpui::{Keystroke, Modifiers};
+use gpui::Keystroke;
 
 /// Encodes a keystroke as the byte sequence a terminal application expects.
 /// Returns `None` for keys that produce no input.
@@ -40,6 +40,7 @@ pub fn encode(keystroke: &Keystroke) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::Modifiers;
 
     fn ks(key: &str, key_char: Option<&str>, modifiers: Modifiers) -> Keystroke {
         Keystroke {
