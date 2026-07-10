@@ -10,9 +10,9 @@ use std::sync::{Arc, Mutex};
 pub use alacritty_terminal;
 
 use alacritty_terminal::event::{Event, EventListener};
-use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point};
-use alacritty_terminal::term::{Config, Term};
+use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
 
 /// Viewport size in character cells.
@@ -101,6 +101,28 @@ impl Vt {
         self.term.grid().cursor.point
     }
 
+    /// Scrolls the viewport through scrollback by `lines` (positive = up, into
+    /// history). No-op on the alternate screen, which has no scrollback.
+    pub fn scroll_display(&mut self, lines: i32) {
+        self.term.scroll_display(Scroll::Delta(lines));
+    }
+
+    /// Jumps the viewport back to the live bottom of the buffer.
+    pub fn scroll_to_bottom(&mut self) {
+        self.term.scroll_display(Scroll::Bottom);
+    }
+
+    /// How many lines the viewport is scrolled up into scrollback (0 = bottom).
+    pub fn display_offset(&self) -> usize {
+        self.term.grid().display_offset()
+    }
+
+    /// Whether the alternate screen is active (vim, htop, less, …). Callers use
+    /// this to route the mouse wheel to the app instead of scrolling history.
+    pub fn is_alt_screen(&self) -> bool {
+        self.term.mode().contains(TermMode::ALT_SCREEN)
+    }
+
     /// Full terminal state for the renderer (grid, cursor, colors, mode).
     pub fn term(&self) -> &Term<impl EventListener + use<>> {
         &self.term
@@ -174,6 +196,48 @@ mod tests {
         assert_eq!(writes, vec!["\x1b[1;1R".to_owned()]);
         // Queue is drained.
         assert!(vt.drain_pty_writes().is_empty());
+    }
+
+    #[test]
+    fn scrollback_reveals_history() {
+        let mut vt = Vt::new(
+            GridSize {
+                columns: 20,
+                screen_lines: 3,
+            },
+            1000,
+        );
+        // Push more lines than fit on screen so the first ones go to scrollback.
+        // No trailing newline, so line9 stays on the bottom visible row.
+        for i in 0..10 {
+            if i > 0 {
+                vt.advance(b"\r\n");
+            }
+            vt.advance(format!("line{i}").as_bytes());
+        }
+        // Seven lines pushed into scrollback (10 written, 3 on screen).
+        assert_eq!(vt.display_offset(), 0);
+
+        vt.scroll_display(5);
+        assert_eq!(vt.display_offset(), 5);
+
+        // Scrolling past the top clamps to the available history.
+        vt.scroll_display(100);
+        assert_eq!(vt.display_offset(), 7);
+
+        vt.scroll_to_bottom();
+        assert_eq!(vt.display_offset(), 0);
+    }
+
+    #[test]
+    fn alt_screen_detection() {
+        let mut vt = vt();
+        assert!(!vt.is_alt_screen());
+        // DECSET 1049: enter alternate screen buffer.
+        vt.advance(b"\x1b[?1049h");
+        assert!(vt.is_alt_screen());
+        vt.advance(b"\x1b[?1049l");
+        assert!(!vt.is_alt_screen());
     }
 
     #[test]

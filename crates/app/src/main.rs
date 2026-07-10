@@ -10,7 +10,7 @@ use core_vt::{GridSize, Vt};
 use render::{Renderer, WgpuRenderer};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
-use winit::event::{ElementState, WindowEvent};
+use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId};
@@ -109,7 +109,28 @@ impl State {
             eprintln!("pty write failed: {err}");
         }
     }
+
+    /// Handles a mouse-wheel notch. On the alternate screen (vim/less/htop) the
+    /// wheel is forwarded as arrow keys so the running app scrolls; otherwise it
+    /// moves the terminal's own scrollback viewport.
+    fn scroll(&self, lines: i32) {
+        let alt_screen = self.vt.lock().expect("vt lock").is_alt_screen();
+        if alt_screen {
+            let seq: &[u8] = if lines > 0 { b"\x1b[A" } else { b"\x1b[B" };
+            let mut input = Vec::with_capacity(seq.len() * lines.unsigned_abs() as usize);
+            for _ in 0..lines.unsigned_abs() {
+                input.extend_from_slice(seq);
+            }
+            self.write_input(&input);
+        } else {
+            self.vt.lock().expect("vt lock").scroll_display(lines);
+            self.window.request_redraw();
+        }
+    }
 }
+
+/// Number of grid lines to scroll per mouse-wheel notch.
+const WHEEL_LINES_PER_NOTCH: f32 = 3.0;
 
 /// Pumps PTY output into the VT state machine and wakes the UI thread.
 fn spawn_reader_thread(
@@ -184,6 +205,18 @@ impl ApplicationHandler<UserEvent> for App {
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => state.resize(size),
+            WindowEvent::MouseWheel { delta, .. } => {
+                let lines = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => (y * WHEEL_LINES_PER_NOTCH).round() as i32,
+                    MouseScrollDelta::PixelDelta(pos) => {
+                        let (_, cell_h) = state.renderer.cell_size();
+                        (pos.y as f32 / cell_h).round() as i32
+                    }
+                };
+                if lines != 0 {
+                    state.scroll(lines);
+                }
+            }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 state.renderer.set_scale_factor(scale_factor as f32);
                 state.resize(state.window.inner_size());
@@ -195,6 +228,9 @@ impl ApplicationHandler<UserEvent> for App {
                 if event.state == ElementState::Pressed
                     && let Some(bytes) = keys::encode(&event, self.modifiers)
                 {
+                    // Typing jumps the viewport back to the prompt, matching
+                    // every other terminal.
+                    state.vt.lock().expect("vt lock").scroll_to_bottom();
                     state.write_input(&bytes);
                 }
             }
