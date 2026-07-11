@@ -35,19 +35,29 @@ crates/
 ## Tech stack
 
 - VT core: `alacritty_terminal` (fallback option: `libghostty-vt`)
-- GPU: `wgpu` (Metal on macOS via abstraction — do NOT hardcode Metal), text via `glyphon` + `cosmic-text`
-- Window/input: `winit` (phase 0); desktop UI framework later: GPUI
+- Desktop UI + rendering: **GPUI** (`gpui`, from crates.io) — the app renders the
+  terminal grid with GPUI-native primitives (text system + quads), like Zed.
+  Requires full Xcode + the Metal Toolchain component to build (`xcodebuild
+  -downloadComponent MetalToolchain`), not just Command Line Tools.
+- `render` crate (`wgpu` + `glyphon`/`cosmic-text`) is retained behind
+  `trait Renderer` but NOT used by the app — it is the future Android backend
+  (GPUI does not target Android). Do NOT hardcode Metal there.
 - SSH: `russh` + custom predictive-echo layer; async runtime: `tokio`
 - Storage: SQLite (`rusqlite`/`sqlx`); secrets: `keyring` (never store secrets in the DB, only references/metadata)
 
-## Current status: Phase 0 — core prototype
+## Current status: Phase 0 (core prototype) — mostly done; app ported to GPUI
 
-Goal: prove that Rust core + wgpu render gives a fast, correct terminal.
-Success = `vim`/`htop`/`less` run correctly in the window, input is responsive,
-render holds high FPS under heavy output, core builds with no render/app deps.
+The desktop app runs on GPUI: `vim`/`htop`/`less` work, colors + block cursor,
+window resize reflows the grid, mouse-wheel scrollback (with alt-screen arrow
+forwarding). Core builds with no dep on `render`/`app`.
 
-Task order: workspace scaffold → core-pty → core-vt → render → app glue →
-core-ssh prototype → core-predict prototype → core-store sketch.
+Remaining phase-0 items: `core-ssh` prototype, `core-predict` prototype,
+`core-store` sketch. Next up after that is phase-1 shell (tabs, tiling,
+connection sidebar, command palette).
+
+App module layout: `main` (GPUI boot) → `terminal_view` (session entity: PTY
+reader task, key/scroll handling) → `terminal_element` (native GPUI grid paint)
+→ `keys` (keystroke → terminal bytes).
 
 ## Conventions
 
