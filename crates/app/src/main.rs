@@ -25,8 +25,10 @@ fn main() {
         cx.bind_keys([
             KeyBinding::new("cmd-t", NewTab, None),
             KeyBinding::new("cmd-w", CloseTab, None),
-            KeyBinding::new("cmd-shift-]", NextTab, None),
-            KeyBinding::new("cmd-shift-[", PrevTab, None),
+            // On macOS gpui folds Shift into the character and drops the shift
+            // modifier, so Cmd+Shift+] arrives as `cmd-}` — bind the glyph.
+            KeyBinding::new("cmd-}", NextTab, None),
+            KeyBinding::new("cmd-{", PrevTab, None),
         ]);
 
         let bounds = Bounds::centered(None, size(px(960.), px(640.)), cx);
