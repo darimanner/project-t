@@ -5,3 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+thiserror.workspace = true
+rusqlite = { version = "0.40.1", features = ["bundled"] }
+# v3: simple Entry::new(service, account) API backed by the OS default store.
+keyring = { version = "3", default-features = false, features = ["apple-native"] }
