@@ -17,6 +17,9 @@ use gpui::{
 
 pub(crate) const FONT_SIZE: Pixels = px(14.0);
 pub(crate) const LINE_HEIGHT_FACTOR: f32 = 1.25;
+/// Bundled monospace family (registered in `main`). Hardcoded until user font
+/// settings land.
+pub(crate) const FONT_FAMILY: &str = "JetBrains Mono";
 
 /// Shared current grid dimensions in cells, so the element (which owns the
 /// pixel bounds and cell metrics) can resize the VT and PTY to fit the window.
@@ -32,7 +35,7 @@ pub struct TerminalElement {
 
 impl TerminalElement {
     pub fn new(vt: Arc<Mutex<Vt>>, pty: Arc<Mutex<PtySession>>, grid_dims: GridDims) -> Self {
-        let font = font("monospace");
+        let font = font(FONT_FAMILY);
         let mut bold_font = font.clone();
         bold_font.weight = FontWeight::BOLD;
         Self {
