@@ -45,15 +45,22 @@ crates/
 - SSH: `russh` + custom predictive-echo layer; async runtime: `tokio`
 - Storage: SQLite (`rusqlite`/`sqlx`); secrets: `keyring` (never store secrets in the DB, only references/metadata)
 
-## Current status: Phase 0 (core prototype) — mostly done; app ported to GPUI
+## Current status: Phase 0 (core prototype) — complete; app on GPUI
 
 The desktop app runs on GPUI: `vim`/`htop`/`less` work, colors + block cursor,
 window resize reflows the grid, mouse-wheel scrollback (with alt-screen arrow
-forwarding). Core builds with no dep on `render`/`app`.
+forwarding), tabs (`Cmd+T/W`, `Cmd+Shift+]`/`[`). Core builds with no dep on
+`render`/`app`.
 
-Remaining phase-0 items: `core-ssh` prototype, `core-predict` prototype,
-`core-store` sketch. Next up after that is phase-1 shell (tabs, tiling,
-connection sidebar, command palette).
+All phase-0 core crates exist and are tested: `core-vt`, `core-pty`,
+`core-ssh` (russh interactive shell behind a `PtySession`-like sync facade;
+`ssh_smoke` example verified against a real host), `core-predict` (mosh-style
+predictive-echo engine — pure logic), `core-store` (SQLite hosts/history +
+keyring secrets). SSH/predict/store are prototypes not yet wired into the app.
+
+Next: phase-1 shell — wire an SSH source into `TerminalView` (local PTY vs SSH
+behind a common session abstraction), then tiling, connection sidebar, command
+palette.
 
 App module layout: `main` (GPUI boot) → `terminal_view` (session entity: PTY
 reader task, key/scroll handling) → `terminal_element` (native GPUI grid paint)
