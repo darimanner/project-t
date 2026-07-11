@@ -6,32 +6,69 @@
 
 use std::sync::{Arc, Mutex};
 
+use core_pty::{PtySession, Size};
 use core_vt::alacritty_terminal::term::cell::Flags;
 use core_vt::alacritty_terminal::vte::ansi::CursorShape;
-use core_vt::{DEFAULT_BG, DEFAULT_FG, Vt, resolve_color};
+use core_vt::{DEFAULT_BG, DEFAULT_FG, GridSize, Vt, resolve_color};
 use gpui::{
     App, Bounds, Element, Font, FontWeight, GlobalElementId, Hsla, InspectorElementId, IntoElement,
     LayoutId, Pixels, Point, Rgba, Style, TextRun, Window, fill, font, point, px, relative, size,
 };
 
-const FONT_SIZE: Pixels = px(14.0);
-const LINE_HEIGHT_FACTOR: f32 = 1.25;
+pub(crate) const FONT_SIZE: Pixels = px(14.0);
+pub(crate) const LINE_HEIGHT_FACTOR: f32 = 1.25;
+
+/// Shared current grid dimensions in cells, so the element (which owns the
+/// pixel bounds and cell metrics) can resize the VT and PTY to fit the window.
+pub type GridDims = Arc<Mutex<(u16, u16)>>;
 
 pub struct TerminalElement {
     vt: Arc<Mutex<Vt>>,
+    pty: Arc<Mutex<PtySession>>,
+    grid_dims: GridDims,
     font: Font,
     bold_font: Font,
 }
 
 impl TerminalElement {
-    pub fn new(vt: Arc<Mutex<Vt>>) -> Self {
+    pub fn new(vt: Arc<Mutex<Vt>>, pty: Arc<Mutex<PtySession>>, grid_dims: GridDims) -> Self {
         let font = font("monospace");
         let mut bold_font = font.clone();
         bold_font.weight = FontWeight::BOLD;
         Self {
             vt,
+            pty,
+            grid_dims,
             font,
             bold_font,
+        }
+    }
+
+    /// Resizes the VT and PTY to the number of cells that fit `bounds`, if that
+    /// differs from the current grid size. Runs before reading the grid so the
+    /// same frame paints at the new dimensions.
+    fn sync_grid_size(&self, bounds: Bounds<Pixels>, cell_width: Pixels, line_height: Pixels) {
+        let cols = (f32::from(bounds.size.width) / f32::from(cell_width)).floor() as u16;
+        let rows = (f32::from(bounds.size.height) / f32::from(line_height)).floor() as u16;
+        let cols = cols.max(2);
+        let rows = rows.max(2);
+
+        let mut dims = self.grid_dims.lock().expect("grid dims lock");
+        if *dims == (cols, rows) {
+            return;
+        }
+        *dims = (cols, rows);
+        self.vt.lock().expect("vt lock").resize(GridSize {
+            columns: cols as usize,
+            screen_lines: rows as usize,
+        });
+        if let Err(err) = self
+            .pty
+            .lock()
+            .expect("pty lock")
+            .resize(Size { rows, cols })
+        {
+            eprintln!("pty resize failed: {err}");
         }
     }
 }
@@ -132,6 +169,8 @@ impl Element for TerminalElement {
         let line_height = FONT_SIZE * LINE_HEIGHT_FACTOR;
         let cell_size = size(cell_width, line_height);
         let origin = bounds.origin;
+
+        self.sync_grid_size(bounds, cell_width, line_height);
 
         let vt = self.vt.lock().expect("vt lock");
         let content = vt.term().renderable_content();
