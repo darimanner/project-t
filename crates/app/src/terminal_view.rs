@@ -10,10 +10,11 @@ use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui::{
     Context, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent, Keystroke,
-    ParentElement, Render, Styled, Window, div, px, rgb,
+    ParentElement, Render, Styled, Window, div, rgb,
 };
 
 use crate::keys;
+use crate::terminal_element::TerminalElement;
 
 const INITIAL_COLS: u16 = 100;
 const INITIAL_ROWS: u16 = 30;
@@ -105,7 +106,6 @@ impl Focusable for TerminalView {
 
 impl Render for TerminalView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let lines = self.vt.lock().expect("vt lock").visible_lines();
         div()
             .track_focus(&self.focus)
             .key_context("Terminal")
@@ -114,11 +114,6 @@ impl Render for TerminalView {
             }))
             .size_full()
             .bg(rgb(0x121216))
-            .text_color(rgb(0xd8d8d8))
-            .font_family("monospace")
-            .text_size(px(14.))
-            .flex()
-            .flex_col()
-            .children(lines.into_iter().map(|l| div().child(l)))
+            .child(TerminalElement::new(self.vt.clone()))
     }
 }

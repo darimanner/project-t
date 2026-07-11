@@ -1,6 +1,7 @@
 //! Thin binary: GPUI window hosting the terminal pane.
 
 mod keys;
+mod terminal_element;
 mod terminal_view;
 
 use gpui::{App, AppContext, Bounds, WindowBounds, WindowOptions, px, size};
