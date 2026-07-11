@@ -15,8 +15,14 @@ pub use palette::{DEFAULT_BG, DEFAULT_FG, resolve_color};
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point};
+use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
+
+// Re-exported so the app can build grid points and drive selection without
+// declaring its own alacritty_terminal dependency.
+pub use alacritty_terminal::index::{Line as GridLine, Point as GridPoint, Side};
+pub use alacritty_terminal::selection::SelectionRange;
 
 /// Viewport size in character cells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,6 +126,38 @@ impl Vt {
         self.term.grid().display_offset()
     }
 
+    /// Buffer point for a visible cell, mapping the on-screen `row` back through
+    /// scrollback. Use this to translate a mouse position into a selection point.
+    pub fn viewport_point(&self, row: usize, col: usize) -> GridPoint {
+        let offset = self.term.grid().display_offset() as i32;
+        Point::new(Line(row as i32 - offset), Column(col))
+    }
+
+    /// Begins a linear (non-block) text selection at `point`.
+    pub fn start_selection(&mut self, point: GridPoint, side: Side) {
+        self.term.selection = Some(Selection::new(SelectionType::Simple, point, side));
+    }
+
+    /// Extends the active selection to `point`. No-op if none is active.
+    pub fn update_selection(&mut self, point: GridPoint, side: Side) {
+        if let Some(selection) = self.term.selection.as_mut() {
+            selection.update(point, side);
+        }
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.term.selection = None;
+    }
+
+    pub fn has_selection(&self) -> bool {
+        self.term.selection.is_some()
+    }
+
+    /// The selected text, or `None` when there is no (non-empty) selection.
+    pub fn selection_text(&self) -> Option<String> {
+        self.term.selection_to_string()
+    }
+
     /// Whether the alternate screen is active (vim, htop, less, …). Callers use
     /// this to route the mouse wheel to the app instead of scrolling history.
     pub fn is_alt_screen(&self) -> bool {
@@ -215,6 +253,23 @@ mod tests {
         assert_eq!(writes, vec!["\x1b[1;1R".to_owned()]);
         // Queue is drained.
         assert!(vt.drain_pty_writes().is_empty());
+    }
+
+    #[test]
+    fn selection_captures_text() {
+        let mut vt = vt();
+        vt.advance(b"hello world");
+        assert!(!vt.has_selection());
+
+        // Select the first five columns of row 0 ("hello").
+        vt.start_selection(vt.viewport_point(0, 0), Side::Left);
+        vt.update_selection(vt.viewport_point(0, 4), Side::Right);
+        assert!(vt.has_selection());
+        assert_eq!(vt.selection_text().as_deref(), Some("hello"));
+
+        vt.clear_selection();
+        assert!(!vt.has_selection());
+        assert_eq!(vt.selection_text(), None);
     }
 
     #[test]

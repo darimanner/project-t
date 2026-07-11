@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use core_pty::{PtySession, Size};
 use core_vt::alacritty_terminal::term::cell::Flags;
 use core_vt::alacritty_terminal::vte::ansi::CursorShape;
-use core_vt::{DEFAULT_BG, DEFAULT_FG, GridSize, Vt, resolve_color};
+use core_vt::{DEFAULT_BG, DEFAULT_FG, GridSize, SelectionRange, Vt, resolve_color};
 use gpui::{
     App, Bounds, Element, Font, FontWeight, GlobalElementId, Hsla, InspectorElementId, IntoElement,
     LayoutId, Pixels, Point, Rgba, Style, TextRun, Window, fill, font, point, px, relative, size,
@@ -21,20 +21,43 @@ pub(crate) const LINE_HEIGHT_FACTOR: f32 = 1.25;
 /// settings land.
 pub(crate) const FONT_FAMILY: &str = "JetBrains Mono";
 
+/// Selection highlight background, sRGB.
+const SELECTION_BG: [u8; 3] = [0x33, 0x44, 0x66];
+
 /// Shared current grid dimensions in cells, so the element (which owns the
 /// pixel bounds and cell metrics) can resize the VT and PTY to fit the window.
 pub type GridDims = Arc<Mutex<(u16, u16)>>;
+
+/// Cell geometry published by the element each paint so the view can map a
+/// mouse position (in window pixels) back to a grid cell for selection.
+#[derive(Clone, Copy, Default)]
+pub struct CellLayout {
+    pub origin_x: f32,
+    pub origin_y: f32,
+    pub cell_width: f32,
+    pub line_height: f32,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+pub type SharedLayout = Arc<Mutex<CellLayout>>;
 
 pub struct TerminalElement {
     vt: Arc<Mutex<Vt>>,
     pty: Arc<Mutex<PtySession>>,
     grid_dims: GridDims,
+    layout: SharedLayout,
     font: Font,
     bold_font: Font,
 }
 
 impl TerminalElement {
-    pub fn new(vt: Arc<Mutex<Vt>>, pty: Arc<Mutex<PtySession>>, grid_dims: GridDims) -> Self {
+    pub fn new(
+        vt: Arc<Mutex<Vt>>,
+        pty: Arc<Mutex<PtySession>>,
+        grid_dims: GridDims,
+        layout: SharedLayout,
+    ) -> Self {
         let font = font(FONT_FAMILY);
         let mut bold_font = font.clone();
         bold_font.weight = FontWeight::BOLD;
@@ -42,6 +65,7 @@ impl TerminalElement {
             vt,
             pty,
             grid_dims,
+            layout,
             font,
             bold_font,
         }
@@ -174,12 +198,24 @@ impl Element for TerminalElement {
         let origin = bounds.origin;
 
         self.sync_grid_size(bounds, cell_width, line_height);
+        {
+            let (cols, rows) = *self.grid_dims.lock().expect("grid dims lock");
+            *self.layout.lock().expect("layout lock") = CellLayout {
+                origin_x: f32::from(origin.x),
+                origin_y: f32::from(origin.y),
+                cell_width: f32::from(cell_width),
+                line_height: f32::from(line_height),
+                cols,
+                rows,
+            };
+        }
 
         let vt = self.vt.lock().expect("vt lock");
         let content = vt.term().renderable_content();
         let cursor_visible = content.cursor.shape != CursorShape::Hidden;
         let cursor_point = content.cursor.point;
         let at_bottom = content.display_offset == 0;
+        let selection: Option<SelectionRange> = content.selection;
 
         let mut rows: Vec<Row> = Vec::new();
         // Background/cursor quads, collected during the walk and painted before
@@ -200,6 +236,9 @@ impl Element for TerminalElement {
             let mut bg = resolve_color(cell.bg, content.colors);
             if cell.flags.contains(Flags::INVERSE) {
                 std::mem::swap(&mut fg, &mut bg);
+            }
+            if selection.is_some_and(|range| range.contains(cell_point)) {
+                bg = SELECTION_BG;
             }
             if cursor_visible && at_bottom && cell_point == cursor_point {
                 // Block cursor: fill the cell with fg, flip the glyph to bg.

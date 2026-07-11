@@ -5,16 +5,19 @@ use std::io::Read;
 use std::sync::{Arc, Mutex};
 
 use core_pty::{PtySession, Size, SpawnConfig};
-use core_vt::{GridSize, Vt};
+use core_vt::{GridPoint, GridSize, Side, Vt};
 use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui::{
-    Context, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent, Keystroke,
-    ParentElement, Render, ScrollDelta, ScrollWheelEvent, Styled, Window, div, rgb,
+    ClipboardItem, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
+    Keystroke, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels,
+    Point, Render, ScrollDelta, ScrollWheelEvent, Styled, Window, div, rgb,
 };
 
 use crate::keys;
-use crate::terminal_element::{FONT_SIZE, GridDims, LINE_HEIGHT_FACTOR, TerminalElement};
+use crate::terminal_element::{
+    CellLayout, FONT_SIZE, GridDims, LINE_HEIGHT_FACTOR, SharedLayout, TerminalElement,
+};
 
 const INITIAL_COLS: u16 = 100;
 const INITIAL_ROWS: u16 = 30;
@@ -26,6 +29,9 @@ pub struct TerminalView {
     vt: Arc<Mutex<Vt>>,
     pty: Arc<Mutex<PtySession>>,
     grid_dims: GridDims,
+    layout: SharedLayout,
+    /// True while the left button is held and dragging out a selection.
+    selecting: bool,
     focus: FocusHandle,
 }
 
@@ -52,6 +58,8 @@ impl TerminalView {
             vt,
             pty,
             grid_dims: Arc::new(Mutex::new((INITIAL_COLS, INITIAL_ROWS))),
+            layout: Arc::new(Mutex::new(CellLayout::default())),
+            selecting: false,
             focus,
         }
     }
@@ -98,11 +106,87 @@ impl TerminalView {
     }
 
     fn on_key(&mut self, keystroke: &Keystroke, cx: &mut Context<Self>) {
+        // Cmd shortcuts are handled by the app, not forwarded to the PTY.
+        if keystroke.modifiers.platform {
+            match keystroke.key.as_str() {
+                "c" => self.copy(cx),
+                "v" => self.paste(cx),
+                _ => {}
+            }
+            return;
+        }
         if let Some(bytes) = keys::encode(keystroke) {
             self.vt.lock().expect("vt lock").scroll_to_bottom();
             let _ = self.pty.lock().expect("pty lock").write_all(&bytes);
             cx.notify();
         }
+    }
+
+    fn copy(&mut self, cx: &mut Context<Self>) {
+        if let Some(text) = self.vt.lock().expect("vt lock").selection_text() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
+    fn paste(&mut self, cx: &mut Context<Self>) {
+        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+            self.vt.lock().expect("vt lock").scroll_to_bottom();
+            let _ = self
+                .pty
+                .lock()
+                .expect("pty lock")
+                .write_all(text.as_bytes());
+            cx.notify();
+        }
+    }
+
+    /// Maps a mouse position (window pixels) to a grid point and cell side,
+    /// using the layout the element publishes each paint. `None` before the
+    /// first paint.
+    fn point_at(&self, pos: Point<Pixels>) -> Option<(GridPoint, Side)> {
+        let layout = *self.layout.lock().expect("layout lock");
+        if layout.cell_width <= 0.0 || layout.line_height <= 0.0 {
+            return None;
+        }
+        let col_f = (f32::from(pos.x) - layout.origin_x).max(0.0) / layout.cell_width;
+        let rel_y = (f32::from(pos.y) - layout.origin_y).max(0.0);
+        let col = (col_f.floor() as usize).min(layout.cols.saturating_sub(1) as usize);
+        let row = ((rel_y / layout.line_height).floor() as usize)
+            .min(layout.rows.saturating_sub(1) as usize);
+        let side = if col_f.fract() < 0.5 {
+            Side::Left
+        } else {
+            Side::Right
+        };
+        let point = self.vt.lock().expect("vt lock").viewport_point(row, col);
+        Some((point, side))
+    }
+
+    fn begin_selection(&mut self, pos: Point<Pixels>, cx: &mut Context<Self>) {
+        if let Some((point, side)) = self.point_at(pos) {
+            self.selecting = true;
+            self.vt
+                .lock()
+                .expect("vt lock")
+                .start_selection(point, side);
+            cx.notify();
+        }
+    }
+
+    fn extend_selection(&mut self, pos: Point<Pixels>, cx: &mut Context<Self>) {
+        if self.selecting
+            && let Some((point, side)) = self.point_at(pos)
+        {
+            self.vt
+                .lock()
+                .expect("vt lock")
+                .update_selection(point, side);
+            cx.notify();
+        }
+    }
+
+    fn end_selection(&mut self) {
+        self.selecting = false;
     }
 
     /// Converts a wheel event into a number of grid lines (positive = up, into
@@ -156,12 +240,30 @@ impl Render for TerminalView {
                     this.scroll(lines, cx);
                 }
             }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, ev: &MouseDownEvent, _window, cx| {
+                    this.begin_selection(ev.position, cx);
+                }),
+            )
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _window, cx| {
+                if ev.pressed_button == Some(MouseButton::Left) {
+                    this.extend_selection(ev.position, cx);
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _ev: &MouseUpEvent, _window, _cx| {
+                    this.end_selection();
+                }),
+            )
             .size_full()
             .bg(rgb(0x121216))
             .child(TerminalElement::new(
                 self.vt.clone(),
                 self.pty.clone(),
                 self.grid_dims.clone(),
+                self.layout.clone(),
             ))
     }
 }
