@@ -3,12 +3,13 @@
 mod keys;
 mod terminal_element;
 mod terminal_view;
+mod workspace;
 
 use std::borrow::Cow;
 
-use gpui::{App, AppContext, Bounds, WindowBounds, WindowOptions, px, size};
+use gpui::{App, AppContext, Bounds, KeyBinding, WindowBounds, WindowOptions, px, size};
 
-use terminal_view::TerminalView;
+use workspace::{CloseTab, NewTab, NextTab, PrevTab, Workspace};
 
 /// Bundled terminal font (SIL OFL 1.1; see assets/fonts/OFL.txt). Registering it
 /// makes the family name resolvable via `gpui::font(FONT_FAMILY)`.
@@ -21,13 +22,20 @@ fn main() {
             .add_fonts(vec![Cow::Borrowed(FONT_REGULAR), Cow::Borrowed(FONT_BOLD)])
             .expect("register bundled fonts");
 
+        cx.bind_keys([
+            KeyBinding::new("cmd-t", NewTab, None),
+            KeyBinding::new("cmd-w", CloseTab, None),
+            KeyBinding::new("cmd-shift-]", NextTab, None),
+            KeyBinding::new("cmd-shift-[", PrevTab, None),
+        ]);
+
         let bounds = Bounds::centered(None, size(px(960.), px(640.)), cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 ..Default::default()
             },
-            |window, cx| cx.new(|cx| TerminalView::new(window, cx)),
+            |window, cx| cx.new(|cx| Workspace::new(window, cx)),
         )
         .unwrap();
         cx.activate(true);

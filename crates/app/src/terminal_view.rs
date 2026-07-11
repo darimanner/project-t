@@ -189,6 +189,12 @@ impl TerminalView {
         self.selecting = false;
     }
 
+    /// Terminates the shell process; called when the owning tab is closed so the
+    /// reader thread hits EOF and exits.
+    pub fn kill(&self) {
+        let _ = self.pty.lock().expect("pty lock").kill();
+    }
+
     /// Converts a wheel event into a number of grid lines (positive = up, into
     /// history). Pixel deltas are divided by the row height in pixels.
     fn wheel_lines(&self, event: &ScrollWheelEvent) -> i32 {
