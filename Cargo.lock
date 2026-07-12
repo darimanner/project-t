@@ -148,6 +148,8 @@ name = "app"
 version = "0.1.0"
 dependencies = [
  "core-pty",
+ "core-ssh",
+ "core-store",
  "core-vt",
  "futures",
  "gpui",

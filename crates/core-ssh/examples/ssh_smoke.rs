@@ -10,10 +10,12 @@ use std::io::Read;
 use std::thread;
 use std::time::Duration;
 
-use core_ssh::{Auth, SshConfig, SshSession, Size};
+use core_ssh::{Auth, Size, SshConfig, SshSession};
 
 fn main() {
-    let target = std::env::args().nth(1).expect("usage: ssh_smoke user@host [port]");
+    let target = std::env::args()
+        .nth(1)
+        .expect("usage: ssh_smoke user@host [port]");
     let port: u16 = std::env::args()
         .nth(2)
         .and_then(|p| p.parse().ok())
@@ -50,7 +52,9 @@ fn main() {
         }
     });
 
-    session.write_all(b"echo hello from ssh\r\n").expect("write");
+    session
+        .write_all(b"echo hello from ssh\r\n")
+        .expect("write");
     thread::sleep(Duration::from_millis(500));
     session.write_all(b"exit\r\n").expect("write");
 

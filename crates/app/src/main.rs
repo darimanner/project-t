@@ -1,15 +1,19 @@
 //! Thin binary: GPUI window hosting the terminal pane.
 
+mod host_form;
 mod keys;
+mod palette;
+mod session;
 mod terminal_element;
 mod terminal_view;
+mod text_input;
 mod workspace;
 
 use std::borrow::Cow;
 
 use gpui::{App, AppContext, Bounds, KeyBinding, WindowBounds, WindowOptions, px, size};
 
-use workspace::{CloseTab, NewTab, NextTab, PrevTab, Workspace};
+use workspace::{CloseTab, NewTab, NextTab, PrevTab, TogglePalette, Workspace};
 
 /// Bundled terminal font (SIL OFL 1.1; see assets/fonts/OFL.txt). Registering it
 /// makes the family name resolvable via `gpui::font(FONT_FAMILY)`.
@@ -29,6 +33,7 @@ fn main() {
             // modifier, so Cmd+Shift+] arrives as `cmd-}` — bind the glyph.
             KeyBinding::new("cmd-}", NextTab, None),
             KeyBinding::new("cmd-{", PrevTab, None),
+            KeyBinding::new("cmd-k", TogglePalette, None),
         ]);
 
         let bounds = Bounds::centered(None, size(px(960.), px(640.)), cx);

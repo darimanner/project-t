@@ -1,10 +1,10 @@
-//! GPUI entity owning a terminal session: pumps PTY output into the VT and
+//! GPUI entity owning a terminal session: pumps session output into the VT and
 //! drives repaints, translates keyboard/scroll into terminal input.
 
 use std::io::Read;
 use std::sync::{Arc, Mutex};
 
-use core_pty::{PtySession, Size, SpawnConfig};
+use core_ssh::SshConfig;
 use core_vt::{GridPoint, GridSize, Side, Vt};
 use futures::StreamExt;
 use futures::channel::mpsc;
@@ -15,6 +15,7 @@ use gpui::{
 };
 
 use crate::keys;
+use crate::session::{LocalSession, RemoteSession, Session};
 use crate::terminal_element::{
     CellLayout, FONT_SIZE, GridDims, LINE_HEIGHT_FACTOR, SharedLayout, TerminalElement,
 };
@@ -25,9 +26,19 @@ const SCROLLBACK_LINES: usize = 10_000;
 /// Grid lines scrolled per mouse-wheel notch reported in line units.
 const WHEEL_LINES_PER_NOTCH: f32 = 3.0;
 
+pub type SharedSession = Arc<Mutex<Box<dyn Session>>>;
+
+/// Where the tab is in its lifecycle. Local tabs start Live; SSH tabs pass
+/// through Connecting on a background thread first.
+enum TabState {
+    Connecting(String),
+    Live(SharedSession),
+    Failed(String),
+}
+
 pub struct TerminalView {
     vt: Arc<Mutex<Vt>>,
-    pty: Arc<Mutex<PtySession>>,
+    state: TabState,
     grid_dims: GridDims,
     layout: SharedLayout,
     /// True while the left button is held and dragging out a selection.
@@ -36,27 +47,16 @@ pub struct TerminalView {
 }
 
 impl TerminalView {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn base(state: TabState, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let size = GridSize {
             columns: INITIAL_COLS as usize,
             screen_lines: INITIAL_ROWS as usize,
         };
-        let vt = Arc::new(Mutex::new(Vt::new(size, SCROLLBACK_LINES)));
-        let pty = PtySession::spawn(&SpawnConfig::user_shell(Size {
-            rows: INITIAL_ROWS,
-            cols: INITIAL_COLS,
-        }))
-        .expect("spawn shell");
-        let reader = pty.reader().expect("clone pty reader");
-        let pty = Arc::new(Mutex::new(pty));
-
-        Self::spawn_reader(reader, vt.clone(), pty.clone(), cx);
-
         let focus = cx.focus_handle();
         window.focus(&focus);
         Self {
-            vt,
-            pty,
+            vt: Arc::new(Mutex::new(Vt::new(size, SCROLLBACK_LINES))),
+            state,
             grid_dims: Arc::new(Mutex::new((INITIAL_COLS, INITIAL_ROWS))),
             layout: Arc::new(Mutex::new(CellLayout::default())),
             selecting: false,
@@ -64,13 +64,80 @@ impl TerminalView {
         }
     }
 
-    /// Blocking OS thread reads PTY output and advances the VT; a foreground
+    /// A tab running the user's local shell.
+    pub fn new_local(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut view = Self::base(TabState::Connecting(String::new()), window, cx);
+        match LocalSession::spawn(INITIAL_ROWS, INITIAL_COLS) {
+            Ok(session) => view.go_live(Box::new(session), cx),
+            Err(err) => view.state = TabState::Failed(format!("failed to spawn shell: {err}")),
+        }
+        view
+    }
+
+    /// A tab that failed before a session even existed (e.g. no stored secret).
+    pub fn new_failed(message: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::base(TabState::Failed(message), window, cx)
+    }
+
+    /// A tab connecting to a remote host. Connect + auth happen on a background
+    /// thread; the tab renders a status line until the shell is ready.
+    pub fn new_ssh(
+        label: String,
+        config: SshConfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let view = Self::base(TabState::Connecting(label), window, cx);
+
+        let (tx, mut rx) = mpsc::unbounded();
+        std::thread::spawn(move || {
+            let _ = tx.unbounded_send(RemoteSession::connect(config));
+        });
+        cx.spawn(async move |this, cx| {
+            if let Some(result) = rx.next().await {
+                let _ = this.update(cx, |this, cx| {
+                    match result {
+                        Ok(session) => this.go_live(Box::new(session), cx),
+                        Err(err) => this.state = TabState::Failed(err.to_string()),
+                    }
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+
+        view
+    }
+
+    /// Installs a ready session: takes its reader, starts the pump, flips state.
+    fn go_live(&mut self, mut session: Box<dyn Session>, cx: &mut Context<Self>) {
+        let Some(reader) = session.take_reader() else {
+            self.state = TabState::Failed("session has no output stream".to_owned());
+            return;
+        };
+        // Adopt the grid size the element last measured (the window may have
+        // been resized while connecting).
+        let (cols, rows) = *self.grid_dims.lock().expect("grid dims lock");
+        session.resize(rows, cols);
+        let session: SharedSession = Arc::new(Mutex::new(session));
+        Self::spawn_reader(reader, self.vt.clone(), session.clone(), cx);
+        self.state = TabState::Live(session);
+    }
+
+    fn session(&self) -> Option<&SharedSession> {
+        match &self.state {
+            TabState::Live(session) => Some(session),
+            _ => None,
+        }
+    }
+
+    /// Blocking OS thread reads session output and advances the VT; a foreground
     /// task awaits wake signals and repaints. The channel only signals "dirty";
     /// the VT itself is updated on the reader thread under its mutex.
     fn spawn_reader(
         mut reader: Box<dyn Read + Send>,
         vt: Arc<Mutex<Vt>>,
-        pty: Arc<Mutex<PtySession>>,
+        session: SharedSession,
         cx: &mut Context<Self>,
     ) {
         let (tx, mut rx) = mpsc::unbounded::<()>();
@@ -87,7 +154,10 @@ impl TerminalView {
                     vt.drain_pty_writes()
                 };
                 for r in responses {
-                    let _ = pty.lock().expect("pty lock").write_all(r.as_bytes());
+                    session
+                        .lock()
+                        .expect("session lock")
+                        .write_all(r.as_bytes());
                 }
                 if tx.unbounded_send(()).is_err() {
                     break;
@@ -106,7 +176,7 @@ impl TerminalView {
     }
 
     fn on_key(&mut self, keystroke: &Keystroke, cx: &mut Context<Self>) {
-        // Cmd shortcuts are handled by the app, not forwarded to the PTY.
+        // Cmd shortcuts are handled by the app, not forwarded to the session.
         if keystroke.modifiers.platform {
             match keystroke.key.as_str() {
                 "c" => self.copy(cx),
@@ -115,9 +185,11 @@ impl TerminalView {
             }
             return;
         }
-        if let Some(bytes) = keys::encode(keystroke) {
+        if let Some(bytes) = keys::encode(keystroke)
+            && let Some(session) = self.session()
+        {
             self.vt.lock().expect("vt lock").scroll_to_bottom();
-            let _ = self.pty.lock().expect("pty lock").write_all(&bytes);
+            session.lock().expect("session lock").write_all(&bytes);
             cx.notify();
         }
     }
@@ -129,12 +201,13 @@ impl TerminalView {
     }
 
     fn paste(&mut self, cx: &mut Context<Self>) {
-        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
+            && let Some(session) = self.session()
+        {
             self.vt.lock().expect("vt lock").scroll_to_bottom();
-            let _ = self
-                .pty
+            session
                 .lock()
-                .expect("pty lock")
+                .expect("session lock")
                 .write_all(text.as_bytes());
             cx.notify();
         }
@@ -189,10 +262,12 @@ impl TerminalView {
         self.selecting = false;
     }
 
-    /// Terminates the shell process; called when the owning tab is closed so the
+    /// Terminates the session; called when the owning tab is closed so the
     /// reader thread hits EOF and exits.
     pub fn kill(&self) {
-        let _ = self.pty.lock().expect("pty lock").kill();
+        if let Some(session) = self.session() {
+            session.lock().expect("session lock").kill();
+        }
     }
 
     /// Converts a wheel event into a number of grid lines (positive = up, into
@@ -213,16 +288,30 @@ impl TerminalView {
     fn scroll(&mut self, lines: i32, cx: &mut Context<Self>) {
         let alt_screen = self.vt.lock().expect("vt lock").is_alt_screen();
         if alt_screen {
+            let Some(session) = self.session() else {
+                return;
+            };
             let seq: &[u8] = if lines > 0 { b"\x1b[A" } else { b"\x1b[B" };
             let mut input = Vec::with_capacity(seq.len() * lines.unsigned_abs() as usize);
             for _ in 0..lines.unsigned_abs() {
                 input.extend_from_slice(seq);
             }
-            let _ = self.pty.lock().expect("pty lock").write_all(&input);
+            session.lock().expect("session lock").write_all(&input);
         } else {
             self.vt.lock().expect("vt lock").scroll_display(lines);
         }
         cx.notify();
+    }
+
+    /// Status overlay for tabs that have no live grid yet.
+    fn render_status(&self, text: String, color: u32) -> gpui::Div {
+        div()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_color(rgb(color))
+            .child(text)
     }
 }
 
@@ -234,7 +323,7 @@ impl Focusable for TerminalView {
 
 impl Render for TerminalView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+        let container = div()
             .track_focus(&self.focus)
             .key_context("Terminal")
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _window, cx| {
@@ -264,12 +353,21 @@ impl Render for TerminalView {
                 }),
             )
             .size_full()
-            .bg(rgb(0x121216))
-            .child(TerminalElement::new(
+            .bg(rgb(0x121216));
+
+        match &self.state {
+            TabState::Live(session) => container.child(TerminalElement::new(
                 self.vt.clone(),
-                self.pty.clone(),
+                session.clone(),
                 self.grid_dims.clone(),
                 self.layout.clone(),
-            ))
+            )),
+            TabState::Connecting(label) => {
+                container.child(self.render_status(format!("connecting to {label}…"), 0x888888))
+            }
+            TabState::Failed(err) => {
+                container.child(self.render_status(format!("connection failed: {err}"), 0xcc6666))
+            }
+        }
     }
 }

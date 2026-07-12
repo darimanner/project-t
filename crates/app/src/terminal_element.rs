@@ -6,10 +6,11 @@
 
 use std::sync::{Arc, Mutex};
 
-use core_pty::{PtySession, Size};
 use core_vt::alacritty_terminal::term::cell::Flags;
 use core_vt::alacritty_terminal::vte::ansi::CursorShape;
 use core_vt::{DEFAULT_BG, DEFAULT_FG, GridSize, SelectionRange, Vt, resolve_color};
+
+use crate::terminal_view::SharedSession;
 use gpui::{
     App, Bounds, Element, Font, FontWeight, GlobalElementId, Hsla, InspectorElementId, IntoElement,
     LayoutId, Pixels, Point, Rgba, Style, TextRun, Window, fill, font, point, px, relative, size,
@@ -44,7 +45,7 @@ pub type SharedLayout = Arc<Mutex<CellLayout>>;
 
 pub struct TerminalElement {
     vt: Arc<Mutex<Vt>>,
-    pty: Arc<Mutex<PtySession>>,
+    session: SharedSession,
     grid_dims: GridDims,
     layout: SharedLayout,
     font: Font,
@@ -54,7 +55,7 @@ pub struct TerminalElement {
 impl TerminalElement {
     pub fn new(
         vt: Arc<Mutex<Vt>>,
-        pty: Arc<Mutex<PtySession>>,
+        session: SharedSession,
         grid_dims: GridDims,
         layout: SharedLayout,
     ) -> Self {
@@ -63,7 +64,7 @@ impl TerminalElement {
         bold_font.weight = FontWeight::BOLD;
         Self {
             vt,
-            pty,
+            session,
             grid_dims,
             layout,
             font,
@@ -71,9 +72,9 @@ impl TerminalElement {
         }
     }
 
-    /// Resizes the VT and PTY to the number of cells that fit `bounds`, if that
-    /// differs from the current grid size. Runs before reading the grid so the
-    /// same frame paints at the new dimensions.
+    /// Resizes the VT and session to the number of cells that fit `bounds`, if
+    /// that differs from the current grid size. Runs before reading the grid so
+    /// the same frame paints at the new dimensions.
     fn sync_grid_size(&self, bounds: Bounds<Pixels>, cell_width: Pixels, line_height: Pixels) {
         let cols = (f32::from(bounds.size.width) / f32::from(cell_width)).floor() as u16;
         let rows = (f32::from(bounds.size.height) / f32::from(line_height)).floor() as u16;
@@ -89,14 +90,10 @@ impl TerminalElement {
             columns: cols as usize,
             screen_lines: rows as usize,
         });
-        if let Err(err) = self
-            .pty
+        self.session
             .lock()
-            .expect("pty lock")
-            .resize(Size { rows, cols })
-        {
-            eprintln!("pty resize failed: {err}");
-        }
+            .expect("session lock")
+            .resize(rows, cols);
     }
 }
 
