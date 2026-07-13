@@ -45,22 +45,28 @@ crates/
 - SSH: `russh` + custom predictive-echo layer; async runtime: `tokio`
 - Storage: SQLite (`rusqlite`/`sqlx`); secrets: `keyring` (never store secrets in the DB, only references/metadata)
 
-## Current status: Phase 0 (core prototype) — complete; app on GPUI
+## Current status: Phase 1 (MVP) — feature-complete, stabilizing
 
 The desktop app runs on GPUI: `vim`/`htop`/`less` work, colors + block cursor,
-window resize reflows the grid, mouse-wheel scrollback (with alt-screen arrow
-forwarding), tabs (`Cmd+T/W`, `Cmd+Shift+]`/`[`). Core builds with no dep on
-`render`/`app`.
+resize reflow, scrollback, selection + clipboard. Shell features: tabs
+(`Cmd+T/W`, `Cmd+Shift+]`/`[`), tiling panes (`Cmd+D` right / `Cmd+Shift+D`
+down; `Cmd+W` closes pane then tab), host sidebar (add-host modal form,
+click-to-connect, delete), command palette (`Cmd+K`), hosts export/import
+(`app --export-hosts` / `--import-hosts`, secret-free JSON).
 
-All phase-0 core crates exist and are tested: `core-vt`, `core-pty`,
-`core-ssh` (russh interactive shell behind a `PtySession`-like sync facade;
-`ssh_smoke` example verified against a real host), `core-predict` (mosh-style
-predictive-echo engine — pure logic), `core-store` (SQLite hosts/history +
-keyring secrets). SSH/predict/store are prototypes not yet wired into the app.
+SSH tabs run over `core-ssh` behind `trait Session` (`app/src/session.rs` —
+local PTY and remote SSH are interchangeable byte sources) with a
+Connecting → Live | Failed tab lifecycle and mosh-style predictive local echo
+(`core-predict`) painted dimmed at the cursor. Host metadata lives in SQLite
+(`~/Library/Application Support/project-t/store.db`), passwords in the OS
+keychain — never in the DB.
 
-Next: phase-1 shell — wire an SSH source into `TerminalView` (local PTY vs SSH
-behind a common session abstraction), then tiling, connection sidebar, command
-palette.
+Known phase-1 gaps: host keys are not verified (accept-all, MITM-open),
+text inputs have no cursor movement/selection/IME, splits are fixed 50/50,
+host editing = delete + re-add.
+
+Next: phase-2 items (autocomplete, blocks, importers, tmux control mode,
+mosh) or hardening the gaps above.
 
 App module layout: `main` (GPUI boot) → `terminal_view` (session entity: PTY
 reader task, key/scroll handling) → `terminal_element` (native GPUI grid paint)
