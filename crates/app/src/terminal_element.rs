@@ -6,6 +6,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use core_predict::Predictor;
 use core_vt::alacritty_terminal::term::cell::Flags;
 use core_vt::alacritty_terminal::vte::ansi::CursorShape;
 use core_vt::{DEFAULT_BG, DEFAULT_FG, GridSize, SelectionRange, Vt, resolve_color};
@@ -48,6 +49,7 @@ pub struct TerminalElement {
     session: SharedSession,
     grid_dims: GridDims,
     layout: SharedLayout,
+    predictor: Option<Arc<Mutex<Predictor>>>,
     font: Font,
     bold_font: Font,
 }
@@ -58,6 +60,7 @@ impl TerminalElement {
         session: SharedSession,
         grid_dims: GridDims,
         layout: SharedLayout,
+        predictor: Option<Arc<Mutex<Predictor>>>,
     ) -> Self {
         let font = font(FONT_FAMILY);
         let mut bold_font = font.clone();
@@ -67,6 +70,7 @@ impl TerminalElement {
             session,
             grid_dims,
             layout,
+            predictor,
             font,
             bold_font,
         }
@@ -207,6 +211,16 @@ impl Element for TerminalElement {
             };
         }
 
+        // Unconfirmed local-echo tail, drawn dimmed at the cursor. While it is
+        // non-empty the real cursor block moves to its end.
+        let predicted: String = self
+            .predictor
+            .as_ref()
+            .map(|p| {
+                String::from_utf8_lossy(&p.lock().expect("predictor lock").predicted()).into_owned()
+            })
+            .unwrap_or_default();
+
         let vt = self.vt.lock().expect("vt lock");
         let content = vt.term().renderable_content();
         let cursor_visible = content.cursor.shape != CursorShape::Hidden;
@@ -237,7 +251,7 @@ impl Element for TerminalElement {
             if selection.is_some_and(|range| range.contains(cell_point)) {
                 bg = SELECTION_BG;
             }
-            if cursor_visible && at_bottom && cell_point == cursor_point {
+            if cursor_visible && at_bottom && cell_point == cursor_point && predicted.is_empty() {
                 // Block cursor: fill the cell with fg, flip the glyph to bg.
                 bg = DEFAULT_FG;
                 fg = DEFAULT_BG;
@@ -286,6 +300,43 @@ impl Element for TerminalElement {
                 Some(cell_width),
             );
             let _ = shaped.paint(line_origin, line_height, window, cx);
+        }
+
+        // Predicted local echo: dim text at the cursor plus the cursor block
+        // moved past it, so typing feels instant over slow links.
+        if !predicted.is_empty() && cursor_visible && at_bottom && cursor_point.line.0 >= 0 {
+            let (cols, _) = *self.grid_dims.lock().expect("grid dims lock");
+            let row = cursor_point.line.0 as f32;
+            let col = cursor_point.column.0;
+            let text_origin = point(
+                origin.x + cell_width * col as f32,
+                origin.y + line_height * row,
+            );
+            let run = TextRun {
+                len: predicted.len(),
+                font: self.font.clone(),
+                color: to_hsla([0x9a, 0x9a, 0xa4]),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let shaped = window.text_system().shape_line(
+                predicted.clone().into(),
+                FONT_SIZE,
+                &[run],
+                Some(cell_width),
+            );
+            let _ = shaped.paint(text_origin, line_height, window, cx);
+
+            let cursor_col = (col + predicted.chars().count()).min(cols.saturating_sub(1) as usize);
+            let cursor_origin = point(
+                origin.x + cell_width * cursor_col as f32,
+                origin.y + line_height * row,
+            );
+            window.paint_quad(fill(
+                Bounds::new(cursor_origin, cell_size),
+                to_hsla(DEFAULT_FG),
+            ));
         }
     }
 }

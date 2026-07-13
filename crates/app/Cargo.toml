@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+core-predict = { version = "0.1.0", path = "../core-predict" }
 core-pty = { version = "0.1.0", path = "../core-pty" }
 core-ssh = { version = "0.1.0", path = "../core-ssh" }
 core-store = { version = "0.1.0", path = "../core-store" }

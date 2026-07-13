@@ -14,6 +14,8 @@ use gpui::{
     Point, Render, ScrollDelta, ScrollWheelEvent, Styled, Window, div, rgb,
 };
 
+use core_predict::Predictor;
+
 use crate::keys;
 use crate::session::{LocalSession, RemoteSession, Session};
 use crate::terminal_element::{
@@ -41,6 +43,9 @@ pub struct TerminalView {
     state: TabState,
     grid_dims: GridDims,
     layout: SharedLayout,
+    /// Mosh-style local echo predictions; `Some` only for remote sessions,
+    /// where the round-trip makes them worth showing.
+    predictor: Option<Arc<Mutex<Predictor>>>,
     /// True while the left button is held and dragging out a selection.
     selecting: bool,
     focus: FocusHandle,
@@ -59,6 +64,7 @@ impl TerminalView {
             state,
             grid_dims: Arc::new(Mutex::new((INITIAL_COLS, INITIAL_ROWS))),
             layout: Arc::new(Mutex::new(CellLayout::default())),
+            predictor: None,
             selecting: false,
             focus,
         }
@@ -87,7 +93,8 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let view = Self::base(TabState::Connecting(label), window, cx);
+        let mut view = Self::base(TabState::Connecting(label), window, cx);
+        view.predictor = Some(Arc::new(Mutex::new(Predictor::new())));
 
         let (tx, mut rx) = mpsc::unbounded();
         std::thread::spawn(move || {
@@ -120,7 +127,13 @@ impl TerminalView {
         let (cols, rows) = *self.grid_dims.lock().expect("grid dims lock");
         session.resize(rows, cols);
         let session: SharedSession = Arc::new(Mutex::new(session));
-        Self::spawn_reader(reader, self.vt.clone(), session.clone(), cx);
+        Self::spawn_reader(
+            reader,
+            self.vt.clone(),
+            session.clone(),
+            self.predictor.clone(),
+            cx,
+        );
         self.state = TabState::Live(session);
     }
 
@@ -138,6 +151,7 @@ impl TerminalView {
         mut reader: Box<dyn Read + Send>,
         vt: Arc<Mutex<Vt>>,
         session: SharedSession,
+        predictor: Option<Arc<Mutex<Predictor>>>,
         cx: &mut Context<Self>,
     ) {
         let (tx, mut rx) = mpsc::unbounded::<()>();
@@ -147,6 +161,12 @@ impl TerminalView {
             while let Ok(n) = reader.read(&mut buf) {
                 if n == 0 {
                     break;
+                }
+                if let Some(predictor) = &predictor {
+                    predictor
+                        .lock()
+                        .expect("predictor lock")
+                        .on_server_output(&buf[..n]);
                 }
                 let responses = {
                     let mut vt = vt.lock().expect("vt lock");
@@ -190,6 +210,11 @@ impl TerminalView {
         {
             self.vt.lock().expect("vt lock").scroll_to_bottom();
             session.lock().expect("session lock").write_all(&bytes);
+            // Show the keystroke immediately as a prediction; the server's
+            // echo will confirm (or flush) it.
+            if let Some(predictor) = &self.predictor {
+                predictor.lock().expect("predictor lock").on_input(&bytes);
+            }
             cx.notify();
         }
     }
@@ -363,6 +388,7 @@ impl Render for TerminalView {
                 session.clone(),
                 self.grid_dims.clone(),
                 self.layout.clone(),
+                self.predictor.clone(),
             )),
             TabState::Connecting(label) => {
                 container.child(self.render_status(format!("connecting to {label}…"), 0x888888))
