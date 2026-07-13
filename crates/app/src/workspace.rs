@@ -13,18 +13,40 @@ use gpui::{
 
 use crate::host_form::{Field, HostForm};
 use crate::palette::{Palette, filter_hosts};
+use crate::pane::{PaneNode, SplitAxis};
 use crate::terminal_view::TerminalView;
 use crate::text_input::render_input;
 
 actions!(
     workspace,
-    [NewTab, CloseTab, NextTab, PrevTab, TogglePalette]
+    [
+        NewTab,
+        CloseTab,
+        NextTab,
+        PrevTab,
+        TogglePalette,
+        SplitRight,
+        SplitDown
+    ]
 );
 
 const SIDEBAR_WIDTH: f32 = 200.0;
 
+/// One tab: a tree of terminal panes.
+struct Tab {
+    root: PaneNode,
+}
+
+impl Tab {
+    fn new(view: Entity<TerminalView>) -> Self {
+        Self {
+            root: PaneNode::Leaf(view),
+        }
+    }
+}
+
 pub struct Workspace {
-    tabs: Vec<Entity<TerminalView>>,
+    tabs: Vec<Tab>,
     active: usize,
     store: Option<Store>,
     store_error: Option<String>,
@@ -43,7 +65,7 @@ fn store_path() -> Option<PathBuf> {
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let first = cx.new(|cx| TerminalView::new_local(window, cx));
+        let first = Tab::new(cx.new(|cx| TerminalView::new_local(window, cx)));
         let (store, store_error) = match store_path().map(Store::open) {
             Some(Ok(store)) => (Some(store), None),
             Some(Err(err)) => (None, Some(format!("store: {err}"))),
@@ -72,15 +94,23 @@ impl Workspace {
         }
     }
 
-    // ---- tabs ----------------------------------------------------------
+    // ---- tabs & panes ---------------------------------------------------
+
+    /// The pane that should receive input in the active tab: the focused one,
+    /// falling back to the first.
+    fn active_pane(&self, window: &Window, cx: &App) -> Entity<TerminalView> {
+        let root = &self.tabs[self.active].root;
+        root.focused_leaf(window, cx)
+            .unwrap_or_else(|| root.leaves()[0].clone())
+    }
 
     fn focus_active(&self, window: &mut Window, cx: &mut App) {
-        let handle = self.tabs[self.active].read(cx).focus_handle(cx);
+        let handle = self.active_pane(window, cx).read(cx).focus_handle(cx);
         window.focus(&handle);
     }
 
-    fn push_tab(&mut self, tab: Entity<TerminalView>, cx: &mut Context<Self>) {
-        self.tabs.push(tab);
+    fn push_tab(&mut self, view: Entity<TerminalView>, cx: &mut Context<Self>) {
+        self.tabs.push(Tab::new(view));
         self.active = self.tabs.len() - 1;
         cx.notify();
     }
@@ -90,13 +120,36 @@ impl Workspace {
         self.push_tab(tab, cx);
     }
 
+    /// Splits the active pane, putting a fresh local shell in the new half.
+    fn split(&mut self, axis: SplitAxis, window: &mut Window, cx: &mut Context<Self>) {
+        let target = self.active_pane(window, cx);
+        // The new view grabs window focus on creation, becoming the active pane.
+        let new = cx.new(|cx| TerminalView::new_local(window, cx));
+        self.tabs[self.active].root.split(&target, axis, new);
+        cx.notify();
+    }
+
+    /// Cmd+W: closes the focused pane; when it is the last pane, the tab.
+    fn close_pane_or_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let target = self.active_pane(window, cx);
+        if self.tabs[self.active].root.remove(&target) {
+            target.read(cx).kill();
+            self.focus_active(window, cx);
+            cx.notify();
+        } else {
+            self.close_tab(window, cx);
+        }
+    }
+
     fn close_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Keep at least one tab open; closing the last one is a no-op.
         if self.tabs.len() == 1 {
             return;
         }
         let closed = self.tabs.remove(self.active);
-        closed.read(cx).kill();
+        for leaf in closed.root.leaves() {
+            leaf.read(cx).kill();
+        }
         self.active = self.active.min(self.tabs.len() - 1);
         self.focus_active(window, cx);
         cx.notify();
@@ -717,6 +770,40 @@ impl Workspace {
             .child(list)
     }
 
+    /// Recursively renders a pane tree; splits share space 50/50.
+    fn render_pane(node: &PaneNode) -> Div {
+        match node {
+            PaneNode::Leaf(view) => div()
+                .flex_1()
+                .min_w(px(0.))
+                .min_h(px(0.))
+                .child(view.clone()),
+            PaneNode::Split {
+                axis,
+                first,
+                second,
+            } => {
+                let (container, divider) = match axis {
+                    SplitAxis::Row => (
+                        div().flex().flex_row(),
+                        div().w(px(1.)).h_full().bg(rgb(0x2a2a33)),
+                    ),
+                    SplitAxis::Column => (
+                        div().flex().flex_col(),
+                        div().h(px(1.)).w_full().bg(rgb(0x2a2a33)),
+                    ),
+                };
+                container
+                    .flex_1()
+                    .min_w(px(0.))
+                    .min_h(px(0.))
+                    .child(Self::render_pane(first))
+                    .child(divider)
+                    .child(Self::render_pane(second))
+            }
+        }
+    }
+
     /// Dimmed full-window layer that centers a modal panel and owns focus.
     fn render_overlay(&self, panel: Div, cx: &mut Context<Self>) -> Div {
         div()
@@ -745,9 +832,17 @@ impl Render for Workspace {
         let mut root = div()
             .key_context("Workspace")
             .on_action(cx.listener(|this, _: &NewTab, window, cx| this.new_tab(window, cx)))
-            .on_action(cx.listener(|this, _: &CloseTab, window, cx| this.close_tab(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &CloseTab, window, cx| this.close_pane_or_tab(window, cx)),
+            )
             .on_action(cx.listener(|this, _: &NextTab, window, cx| this.next_tab(window, cx)))
             .on_action(cx.listener(|this, _: &PrevTab, window, cx| this.prev_tab(window, cx)))
+            .on_action(cx.listener(|this, _: &SplitRight, window, cx| {
+                this.split(SplitAxis::Row, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SplitDown, window, cx| {
+                this.split(SplitAxis::Column, window, cx)
+            }))
             .on_action(
                 cx.listener(|this, _: &TogglePalette, window, cx| this.toggle_palette(window, cx)),
             )
@@ -762,7 +857,7 @@ impl Render for Workspace {
                     .flex_col()
                     .flex_1()
                     .child(self.render_tab_bar(cx))
-                    .child(div().flex_1().child(self.tabs[self.active].clone())),
+                    .child(Self::render_pane(&self.tabs[self.active].root)),
             );
 
         if let Some(form) = &self.form {

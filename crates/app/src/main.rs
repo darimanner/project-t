@@ -3,6 +3,7 @@
 mod host_form;
 mod keys;
 mod palette;
+mod pane;
 mod session;
 mod terminal_element;
 mod terminal_view;
@@ -13,7 +14,9 @@ use std::borrow::Cow;
 
 use gpui::{App, AppContext, Bounds, KeyBinding, WindowBounds, WindowOptions, px, size};
 
-use workspace::{CloseTab, NewTab, NextTab, PrevTab, TogglePalette, Workspace};
+use workspace::{
+    CloseTab, NewTab, NextTab, PrevTab, SplitDown, SplitRight, TogglePalette, Workspace,
+};
 
 /// Bundled terminal font (SIL OFL 1.1; see assets/fonts/OFL.txt). Registering it
 /// makes the family name resolvable via `gpui::font(FONT_FAMILY)`.
@@ -34,6 +37,8 @@ fn main() {
             KeyBinding::new("cmd-}", NextTab, None),
             KeyBinding::new("cmd-{", PrevTab, None),
             KeyBinding::new("cmd-k", TogglePalette, None),
+            KeyBinding::new("cmd-d", SplitRight, None),
+            KeyBinding::new("cmd-shift-d", SplitDown, None),
         ]);
 
         let bounds = Bounds::centered(None, size(px(960.), px(640.)), cx);

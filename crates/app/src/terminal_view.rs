@@ -337,7 +337,9 @@ impl Render for TerminalView {
             }))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, ev: &MouseDownEvent, _window, cx| {
+                cx.listener(|this, ev: &MouseDownEvent, window, cx| {
+                    // Clicking a pane makes it the active one.
+                    window.focus(&this.focus);
                     this.begin_selection(ev.position, cx);
                 }),
             )
