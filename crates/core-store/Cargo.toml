@@ -9,3 +9,5 @@ thiserror.workspace = true
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 # v3: simple Entry::new(service, account) API backed by the OS default store.
 keyring = { version = "3", default-features = false, features = ["apple-native"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"

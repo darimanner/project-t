@@ -8,6 +8,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -16,10 +17,13 @@ pub enum StoreError {
     Db(#[from] rusqlite::Error),
     #[error("unknown auth kind '{0}' in database")]
     BadAuthKind(String),
+    #[error("invalid hosts JSON")]
+    Json(#[from] serde_json::Error),
 }
 
 /// How a host authenticates. The secret itself lives in the keychain, not here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum AuthKind {
     Password,
     Key,
@@ -55,8 +59,9 @@ pub struct Host {
     pub key_path: Option<String>,
 }
 
-/// Fields for creating a host (no id yet).
-#[derive(Debug, Clone)]
+/// Fields for creating a host (no id yet). Also the JSON schema for host
+/// export/import — deliberately secret-free.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewHost {
     pub label: String,
     pub host: String,
@@ -156,6 +161,34 @@ impl Store {
             params![host_id, line, now()],
         )?;
         Ok(())
+    }
+
+    /// All hosts as pretty JSON (the [`NewHost`] schema — ids and secrets are
+    /// never exported).
+    pub fn export_hosts_json(&self) -> Result<String, StoreError> {
+        let hosts: Vec<NewHost> = self
+            .list_hosts()?
+            .into_iter()
+            .map(|h| NewHost {
+                label: h.label,
+                host: h.host,
+                port: h.port,
+                username: h.username,
+                auth: h.auth,
+                key_path: h.key_path,
+            })
+            .collect();
+        Ok(serde_json::to_string_pretty(&hosts)?)
+    }
+
+    /// Adds every host from a JSON export. Returns how many were added.
+    /// Passwords are not part of the format and must be re-entered.
+    pub fn import_hosts_json(&self, json: &str) -> Result<usize, StoreError> {
+        let hosts: Vec<NewHost> = serde_json::from_str(json)?;
+        for host in &hosts {
+            self.add_host(host)?;
+        }
+        Ok(hosts.len())
     }
 
     /// Most recent history lines for a host, newest first.
@@ -289,6 +322,21 @@ mod tests {
         let recent = store.recent_history(h1, 10).unwrap();
         assert_eq!(recent, vec!["cd /tmp", "ls"]); // newest first
         assert_eq!(store.recent_history(h2, 10).unwrap(), vec!["whoami"]);
+    }
+
+    #[test]
+    fn export_import_roundtrip() {
+        let src = Store::open_in_memory().unwrap();
+        src.add_host(&sample()).unwrap();
+        let json = src.export_hosts_json().unwrap();
+        assert!(!json.contains("password\":")); // schema holds kind, not secrets
+
+        let dst = Store::open_in_memory().unwrap();
+        assert_eq!(dst.import_hosts_json(&json).unwrap(), 1);
+        let hosts = dst.list_hosts().unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].label, "prod");
+        assert_eq!(hosts[0].auth, AuthKind::Key);
     }
 
     #[test]

@@ -57,7 +57,7 @@ pub struct Workspace {
     overlay_focus: FocusHandle,
 }
 
-fn store_path() -> Option<PathBuf> {
+pub(crate) fn store_path() -> Option<PathBuf> {
     let dir = std::env::home_dir()?.join("Library/Application Support/project-t");
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir.join("store.db"))

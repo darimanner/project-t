@@ -23,7 +23,43 @@ use workspace::{
 const FONT_REGULAR: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf");
 const FONT_BOLD: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf");
 
+/// Handles `--export-hosts [path]` / `--import-hosts <path>` and returns true
+/// when the process should exit instead of opening a window. Hosts travel as
+/// secret-free JSON; passwords stay in the keychain and must be re-entered.
+fn handle_cli(args: &[String]) -> bool {
+    let open_store = || {
+        let path = workspace::store_path().expect("resolve store path");
+        core_store::Store::open(path).expect("open host store")
+    };
+    if let Some(i) = args.iter().position(|a| a == "--export-hosts") {
+        let path = args
+            .get(i + 1)
+            .cloned()
+            .unwrap_or_else(|| "hosts.json".to_owned());
+        let json = open_store().export_hosts_json().expect("export hosts");
+        std::fs::write(&path, json).expect("write export file");
+        println!("hosts exported to {path}");
+        return true;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--import-hosts") {
+        let Some(path) = args.get(i + 1) else {
+            eprintln!("usage: app --import-hosts <path>");
+            return true;
+        };
+        let json = std::fs::read_to_string(path).expect("read import file");
+        let count = open_store().import_hosts_json(&json).expect("import hosts");
+        println!("imported {count} host(s); passwords must be re-entered");
+        return true;
+    }
+    false
+}
+
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if handle_cli(&args) {
+        return;
+    }
+
     gpui::Application::new().run(|cx: &mut App| {
         cx.text_system()
             .add_fonts(vec![Cow::Borrowed(FONT_REGULAR), Cow::Borrowed(FONT_BOLD)])
