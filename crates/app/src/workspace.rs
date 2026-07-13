@@ -493,7 +493,7 @@ impl Workspace {
             )
     }
 
-    fn render_form(&self, form: &HostForm) -> Div {
+    fn render_form(&self, form: &HostForm, cx: &mut Context<Self>) -> Div {
         let field_row = |title: &str, input: Div| {
             div()
                 .flex()
@@ -508,15 +508,49 @@ impl Workspace {
                 .child(input)
         };
 
-        let auth_chip = |name: &str, active: bool| {
-            div()
-                .px_2()
-                .py_1()
-                .rounded_sm()
-                .bg(if active { rgb(0x2a3a55) } else { rgb(0x1a1a20) })
-                .text_color(if active { rgb(0xd8d8d8) } else { rgb(0x777777) })
-                .child(name.to_owned())
+        // Click focuses the field (Tab still cycles). Propagation stops so the
+        // backdrop's close-on-click never sees clicks inside the panel.
+        fn click_focus(
+            field: Field,
+            cx: &mut Context<Workspace>,
+        ) -> impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static {
+            cx.listener(
+                move |this: &mut Workspace, _: &MouseDownEvent, _window, cx| {
+                    cx.stop_propagation();
+                    if let Some(form) = &mut this.form {
+                        form.focus = field;
+                        cx.notify();
+                    }
+                },
+            )
+        }
+        let input_field = |state, placeholder, field: Field, cx: &mut Context<Self>| -> Div {
+            render_input(state, placeholder, form.focus == field)
+                .on_mouse_down(MouseButton::Left, click_focus(field, cx))
         };
+
+        let auth_chip =
+            |name: &str, active: bool, auth: core_store::AuthKind, cx: &mut Context<Self>| {
+                div()
+                    .px_2()
+                    .py_1()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .bg(if active { rgb(0x2a3a55) } else { rgb(0x1a1a20) })
+                    .text_color(if active { rgb(0xd8d8d8) } else { rgb(0x777777) })
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this: &mut Self, _: &MouseDownEvent, _window, cx| {
+                            cx.stop_propagation();
+                            if let Some(form) = &mut this.form {
+                                form.focus = Field::AuthToggle;
+                                form.set_auth(auth);
+                                cx.notify();
+                            }
+                        }),
+                    )
+                    .child(name.to_owned())
+            };
         let auth_focused = form.focus == Field::AuthToggle;
         let is_password = form.auth == core_store::AuthKind::Password;
         let auth_row = div()
@@ -533,8 +567,19 @@ impl Workspace {
             } else {
                 rgb(0x33333c)
             })
-            .child(auth_chip("password", is_password))
-            .child(auth_chip("key", !is_password))
+            .on_mouse_down(MouseButton::Left, click_focus(Field::AuthToggle, cx))
+            .child(auth_chip(
+                "password",
+                is_password,
+                core_store::AuthKind::Password,
+                cx,
+            ))
+            .child(auth_chip(
+                "key",
+                !is_password,
+                core_store::AuthKind::Key,
+                cx,
+            ))
             .child(
                 div()
                     .text_xs()
@@ -552,34 +597,40 @@ impl Workspace {
             .bg(rgb(0x16161c))
             .border_1()
             .border_color(rgb(0x33333c))
+            // Swallow clicks that land on the panel but not on any field.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|_, _: &MouseDownEvent, _window, cx| cx.stop_propagation()),
+            )
             .child(div().text_color(rgb(0xd8d8d8)).child("Add host"))
             .child(field_row(
                 "label",
-                render_input(&form.label, "prod", form.focus == Field::Label),
+                input_field(&form.label, "prod", Field::Label, cx),
             ))
             .child(field_row(
                 "host",
-                render_input(&form.host, "1.2.3.4", form.focus == Field::Host),
+                input_field(&form.host, "1.2.3.4", Field::Host, cx),
             ))
             .child(field_row(
                 "port",
-                render_input(&form.port, "22", form.focus == Field::Port),
+                input_field(&form.port, "22", Field::Port, cx),
             ))
             .child(field_row(
                 "user",
-                render_input(&form.user, "root", form.focus == Field::User),
+                input_field(&form.user, "root", Field::User, cx),
             ))
             .child(field_row("auth", auth_row))
             .child(field_row(
                 if is_password { "password" } else { "key path" },
-                render_input(
+                input_field(
                     &form.secret,
                     if is_password {
                         "••••"
                     } else {
                         "~/.ssh/id_ed25519"
                     },
-                    form.focus == Field::Secret,
+                    Field::Secret,
+                    cx,
                 ),
             ))
             .child(
@@ -595,7 +646,7 @@ impl Workspace {
         panel
     }
 
-    fn render_palette(&self, palette: &Palette) -> Div {
+    fn render_palette(&self, palette: &Palette, cx: &mut Context<Self>) -> Div {
         let filtered = filter_hosts(&self.hosts, palette.input.text());
         let mut list = div().flex().flex_col().gap_1();
         if filtered.is_empty() {
@@ -618,6 +669,7 @@ impl Workspace {
                     .px_2()
                     .py_1()
                     .rounded_sm()
+                    .cursor_pointer()
                     .bg(if selected {
                         rgb(0x2a3a55)
                     } else {
@@ -628,6 +680,14 @@ impl Workspace {
                     } else {
                         rgb(0x999999)
                     })
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            this.close_overlays(window, cx);
+                            this.open_ssh_tab(host_index, window, cx);
+                        }),
+                    )
                     .child(host.label.clone())
                     .child(
                         div()
@@ -648,6 +708,11 @@ impl Workspace {
             .bg(rgb(0x16161c))
             .border_1()
             .border_color(rgb(0x33333c))
+            // Swallow clicks inside the panel so the backdrop doesn't close it.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|_, _: &MouseDownEvent, _window, cx| cx.stop_propagation()),
+            )
             .child(render_input(&palette.input, "connect to host…", true))
             .child(list)
     }
@@ -701,10 +766,10 @@ impl Render for Workspace {
             );
 
         if let Some(form) = &self.form {
-            let panel = self.render_form(form);
+            let panel = self.render_form(form, cx);
             root = root.child(self.render_overlay(panel, cx));
         } else if let Some(palette) = &self.palette {
-            let panel = self.render_palette(palette);
+            let panel = self.render_palette(palette, cx);
             root = root.child(self.render_overlay(panel, cx));
         }
         root

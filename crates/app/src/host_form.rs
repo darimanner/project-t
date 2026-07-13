@@ -84,6 +84,14 @@ impl HostForm {
         self.focus = FIELD_ORDER[(i + step) % FIELD_ORDER.len()];
     }
 
+    /// Selects an auth kind directly (mouse click on a chip). No-op when
+    /// already selected, so the secret text is preserved.
+    pub fn set_auth(&mut self, auth: AuthKind) {
+        if self.auth != auth {
+            self.toggle_auth();
+        }
+    }
+
     /// Flips password ⇄ key auth. The secret field switches meaning, so its
     /// text is cleared and masking follows the auth kind.
     pub fn toggle_auth(&mut self) {
