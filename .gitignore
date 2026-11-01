@@ -1,8 +1,9 @@
 # Private design docs, specs and plans stay local
 /docs/
 
-# Local agent state
+# Local agent state; shared agent instructions live in AGENTS.md
 .claude/
+CLAUDE.md
 
 # Rust
 /target/
