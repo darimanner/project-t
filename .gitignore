@@ -1,8 +1,8 @@
-# Private design docs kept local; generated specs/plans under docs/superpowers/ stay tracked
-/docs/*
-!/docs/superpowers/
-!/docs/superpowers/**
-README.md
+# Private design docs, specs and plans stay local
+/docs/
+
+# Local agent state
+.claude/
 
 # Rust
 /target/
